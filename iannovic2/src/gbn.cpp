@@ -3,6 +3,8 @@
 #include <iostream>
 #include <getopt.h>
 #include <ctype.h>
+#include <vector>
+#include <string.h>
 /* ******************************************************************
  ALTERNATING BIT AND GO-BACK-N NETWORK EMULATOR: VERSION 1.1  J.F.Kurose
 
@@ -36,6 +38,11 @@ struct pkt {
    char payload[20];
     };
 
+void tolayer3(int AorB,struct pkt packet);
+void stoptimer(int AorB);
+void starttimer(int AorB,float increment);
+void tolayer5(int AorB,char *datasent);
+
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
 /* Statistics 
@@ -51,16 +58,88 @@ int B_transport = 0;
  * Do NOT change the name/declaration of these variables
  * They are set to zero here. You will need to set them (except WINSIZE) to some proper values.
  * */
-float TIMEOUT = 0.0;
+float TIMEOUT = 15.0;
 int WINSIZE;         //This is supplied as cmd-line parameter; You will need to read this value but do NOT modify it's value; 
-int SND_BUFSIZE = 0; //Sender's Buffer size
-int RCV_BUFSIZE = 0; //Receiver's Buffer size
+int SND_BUFSIZE = 1000; //Sender's Buffer size
+int RCV_BUFSIZE = 1000; //Receiver's Buffer size
+
+//A state variables
+int* nextseqnum;
+int base;
+int size;
+std::vector<pkt> packets;
+int dup_counter;
+//B state variables
+int expectedseqnum;
+
+void setChecksum(pkt* packet)
+{
+	int checksum = 0;
+	checksum += packet->acknum;
+	checksum += packet->seqnum;
+	for (int i = 0; i < 20; i ++)
+	{
+		checksum += packet->payload[i];
+	}
+	packet->checksum = checksum;
+	printf("checksum is %u \n", checksum);
+	printf("checksum in packet is %u \n",packet->checksum);
+}
+
+int getChecksum(pkt* packet)
+{
+	int checksum = 0;
+	checksum += packet->acknum;
+	checksum += packet->seqnum;
+	for (int i = 0; i < 20; i ++)
+	{
+		checksum += packet->payload[i];
+	}
+	//printf("checksum is %u \n", checksum);
+	return checksum;
+}
+int checkChecksum(pkt* packet)
+{
+	//printf("packet checksum: %u, calculated checksum %u \n",packet->checksum,getChecksum(packet));
+	if (packet->checksum != getChecksum(packet))
+	{
+		printf("checksum does not match up populated: %u, calculated: %u \n",packet->checksum,getChecksum(packet));
+		return -1;
+	}
+	return 0;
+}
 
 /* called from layer 5, passed the data to be sent to other side */
 void A_output(struct msg message) //ram's comment - students can change the return type of the function from struct to pointers if necessary
 {
+	A_application ++;
 
 
+	pkt packet;
+	packet.acknum = 0;
+	packet.checksum = 0;
+	packet.seqnum = 0;
+	memset(&packet.payload,0,20);
+	strcpy((char *)&packet.payload,(char *)&message.data);
+	packets.push_back(packet);
+
+	if(*nextseqnum < base + WINSIZE)
+	{
+		/* populate packet */
+		packets[*nextseqnum].seqnum = *nextseqnum;
+		setChecksum(&packets[*nextseqnum]);
+
+		/* send packet to layer below */
+		tolayer3(0,packets[*nextseqnum]);
+		A_transport++;
+
+		if (base == *nextseqnum)
+		{
+			starttimer(0,TIMEOUT);
+		}
+
+		*nextseqnum = *nextseqnum + 1;
+	}
 }
 
 void B_output(struct msg message)  /* need be completed only for extra credit */
@@ -72,19 +151,51 @@ void B_output(struct msg message)  /* need be completed only for extra credit */
 /* called from layer 3, when a packet arrives for layer 4 */
 void A_input(struct pkt packet)
 {
+	printf("acknum at A is %u \n",packet.acknum);
+	if (checkChecksum(&packet))
+	{
+		printf("checksum failed, packet is corrupt at A \n");
+	}
+	else
+	{
+		base = packet.acknum;
+
+		if (base == *nextseqnum)
+		{
+			stoptimer(0);
+		}
+		else
+		{
+			stoptimer(0);
+			starttimer(0,TIMEOUT);
+		}
+	}
 
 }
 
 /* called when A's timer goes off */
 void A_timerinterrupt() //ram's comment - changed the return type to void.
 {
-
+	starttimer(0,TIMEOUT);
+	for (int i = base; i < *nextseqnum; i++)
+	{
+		pkt packet = packets.at(i);
+		printf("resending packet with seq %u \n",packet.seqnum);
+		tolayer3(0,packet);
+		A_transport++;
+	}
 }  
 
 /* the following routine will be called once (only) before any other */
 /* entity A routines are called. You can use it to do any initialization */
 void A_init() //ram's comment - changed the return type to void.
 {
+	nextseqnum = new int;
+	*nextseqnum = 1;
+	printf("nextseqnum is %u \n",*nextseqnum);
+	dup_counter = 0;
+	base = 1;
+	packets.resize(SND_BUFSIZE);
 }
 
 
@@ -93,6 +204,42 @@ void A_init() //ram's comment - changed the return type to void.
 /* called from layer 3, when a packet arrives for layer 4 at B*/
 void B_input(struct pkt packet)
 {
+	B_transport++;
+	printf("base is %u \n",base);
+	printf("received packet with seq %u :  expected is %u \n",packet.seqnum,expectedseqnum);
+	if (checkChecksum(&packet))
+	{
+		printf("packet is corrupt \n");
+	}
+	else if (packet.seqnum == expectedseqnum)
+	{
+		/* send packet to Application at B*/
+		tolayer5(1,packet.payload);
+		B_application++;
+
+		/* create ACK packet*/
+		pkt sendpacket;
+		memset(&sendpacket.payload,0,20);
+		sendpacket.acknum = expectedseqnum;
+		sendpacket.seqnum = expectedseqnum;
+		setChecksum(&sendpacket);
+
+		/* send ACK to A*/
+		tolayer3(1,sendpacket);
+		expectedseqnum++;
+	}
+	else
+	{
+		printf("Discarding packet. sending old ACK with expected seqnum %u \n",expectedseqnum);
+
+		/* default to sending ACK of expected seqnum to A*/
+		pkt sendpacket;
+		sendpacket.acknum = expectedseqnum;
+		sendpacket.seqnum = expectedseqnum;
+		memset(&sendpacket.payload,0,20);
+		setChecksum(&sendpacket);
+		tolayer3(1,sendpacket);
+	}
 }
 
 /* called when B's timer goes off */
@@ -104,6 +251,7 @@ void B_timerinterrupt() //ram's comment - changed the return type to void.
 /* entity B routines are called. You can use it to do any initialization */
 void B_init() //ram's comment - changed the return type to void.
 {
+	expectedseqnum = 1;
 }
 
 int TRACE = 1;             /* for my debugging */

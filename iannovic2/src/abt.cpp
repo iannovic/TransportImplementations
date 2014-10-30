@@ -3,6 +3,7 @@
 #include <iostream>
 #include <getopt.h>
 #include <ctype.h>
+#include <string.h>
 /* ******************************************************************
  ALTERNATING BIT AND GO-BACK-N NETWORK EMULATOR: VERSION 1.1  J.F.Kurose
 
@@ -36,6 +37,10 @@ struct pkt {
    char payload[20];
     };
 
+void tolayer3(int AorB,struct pkt packet);
+void stoptimer(int AorB);
+void starttimer(int AorB,float increment);
+void tolayer5(int AorB,char *datasent);
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
 /* Statistics 
@@ -51,16 +56,92 @@ int B_transport = 0;
  * Do NOT change the name/declaration of these variables
  * They are set to zero here. You will need to set them (except WINSIZE) to some proper values.
  * */
-float TIMEOUT = 0.0;
+float TIMEOUT = 15.0;
+
+/* A variables */
+int A_bit;
+pkt *current_packet_a;
+int isPacketInTransit;
+
+/*B variables */
+int B_bit;
+pkt *current_packet_b;
+int oncethru;
+
+
 //int WINSIZE ;        //Not applicable to ABT
 //int SND_BUFSIZE = 0; //Not applicable to ABT
 //int RCV_BUFSIZE = 0; //Not applicable to ABT
 
+void setChecksum(pkt* packet)
+{
+	int checksum = 0;
+	checksum += packet->acknum;
+	checksum += packet->seqnum;
+	for (int i = 0; i < 20; i ++)
+	{
+		checksum += (int)packet->payload[i];
+	}
+	packet->checksum = checksum;
+	printf("checksum is %u \n", checksum);
+	printf("checksum in packet is %u \n",packet->checksum);
+}
+
+int getChecksum(pkt* packet)
+{
+	int checksum = 0;
+	checksum += packet->acknum;
+	checksum += packet->seqnum;
+	for (int i = 0; i < 20; i ++)
+	{
+		checksum += packet->payload[i];
+	}
+	//printf("checksum is %u \n", checksum);
+	return checksum;
+}
+int checkChecksum(pkt* packet)
+{
+	//printf("packet checksum: %u, calculated checksum %u \n",packet->checksum,getChecksum(packet));
+	if (packet->checksum != getChecksum(packet))
+	{
+		printf("checksum does not match up populated: %u, calculated: %u \n",packet->checksum,getChecksum(packet));
+		return -1;
+	}
+	return 0;
+}
 /* called from layer 5, passed the data to be sent to other side */
 void A_output(struct msg message) //ram's comment - students can change the return type of the function from struct to pointers if necessary
 {
+	A_application ++;
 
+	/* ignore new packets if one is already in transit*/
+	if (isPacketInTransit == 0)
+	{
+		/* zero out packet */
+		memset(&current_packet_a->payload,0,20);
+		current_packet_a->seqnum = 0;
+		current_packet_b->checksum = 0;
+		current_packet_a->acknum = 0;
 
+		/* populate packet */
+		strcpy((char*)&current_packet_a->payload,(char*)&message);
+		current_packet_a->acknum = A_bit;
+		setChecksum(current_packet_a);
+
+		/* send packet */
+		A_transport++;
+		tolayer3(0,*current_packet_a);
+
+		/* start timer */
+		starttimer(0,TIMEOUT);
+
+		/* set flag */
+		isPacketInTransit = 1;
+	}
+	else
+	{
+		printf("packet already in transit, ignored this message \n");
+	}
 }
 
 void B_output(struct msg message)  /* need be completed only for extra credit */
@@ -72,19 +153,55 @@ void B_output(struct msg message)  /* need be completed only for extra credit */
 /* called from layer 3, when a packet arrives for layer 4 */
 void A_input(struct pkt packet)
 {
+	printf("current packet at A input has ack num of %u, A bit is %u, packet A ack is %u, B ACK bit is %u \n",packet.acknum,A_bit,current_packet_a->acknum,B_bit);
+	if (checkChecksum(&packet))
+	{
+		printf("checksum does not match up \n");
+	}
+	else if (packet.acknum == A_bit && isPacketInTransit == 1)
+	{
+		printf("successfully received ACK! \n");
+		/* switch the bit*/
+		if (A_bit == 0)
+		{
+			A_bit = 1;
+			printf("switched A to 1 \n");
+		}
+		else
+		{
+			printf("switched A to 0 \n");
+			A_bit = 0;
+		}
 
+		/* a packet is no longer in transit */
+		isPacketInTransit = 0;
+
+		/* stop the timer*/
+		stoptimer(0);
+	}
 }
 
 /* called when A's timer goes off */
 void A_timerinterrupt() //ram's comment - changed the return type to void.
 {
+	/* resend packet	*/
+	A_transport++;
+	current_packet_a->acknum = A_bit;
+	setChecksum(current_packet_a);
+	tolayer3(0,*current_packet_a);
 
+	//printf("resending packet since timer interrupt, A bit is %u, packet A ack is %u, B ACK bit is %u \n",A_bit,current_packet_a->acknum,B_bit);
+	/* re start timer	*/
+	starttimer(0,TIMEOUT);
 }  
 
 /* the following routine will be called once (only) before any other */
 /* entity A routines are called. You can use it to do any initialization */
 void A_init() //ram's comment - changed the return type to void.
 {
+	A_bit = 0;
+	isPacketInTransit = 0;
+	current_packet_a = new pkt;
 }
 
 
@@ -93,6 +210,57 @@ void A_init() //ram's comment - changed the return type to void.
 /* called from layer 3, when a packet arrives for layer 4 at B*/
 void B_input(struct pkt packet)
 {
+	B_transport ++;
+	//printf("current packet at B input has ack num of %u, A bit is %u, packet A ack is %u, B ACK bit is %u \n",packet.acknum,A_bit,current_packet_a->acknum,B_bit);
+	if (checkChecksum(&packet) && oncethru == 1)
+	{
+		//tolayer3(1,*current_packet_b);
+	}
+	else if (packet.acknum == B_bit)
+	{
+		printf("sending ack with value %u \n", B_bit);
+		/* send the payload to the application*/
+		B_application ++;
+		tolayer5(1,packet.payload);
+
+		/*zero out old packet */
+		memset(&current_packet_b->payload,0,20);
+		current_packet_b->seqnum = 0;
+		current_packet_b->checksum = 0;
+		current_packet_b->acknum = 0;
+
+		/* populate fields of packet */
+		current_packet_b->acknum = packet.acknum;
+		setChecksum(current_packet_b);
+
+		/* create an ACK packet to send to A*/
+		tolayer3(1,*current_packet_b);
+
+		if (B_bit == 0)
+		{
+			B_bit = 1;
+			printf("switched B to 1 \n");
+		}
+		else
+		{
+			printf("switched B to 0 \n");
+			B_bit = 0;
+		}
+	}
+	else
+	{
+		/*zero out old packet */
+		memset(&current_packet_b->payload,0,20);
+		current_packet_b->seqnum = 0;
+		current_packet_b->checksum = 0;
+		current_packet_b->acknum = 0;
+
+		/* populate fields of packet */
+		current_packet_b->acknum = packet.acknum;
+		setChecksum(current_packet_b);
+		tolayer3(1,*current_packet_b);
+	}
+
 }
 
 /* called when B's timer goes off */
@@ -104,6 +272,9 @@ void B_timerinterrupt() //ram's comment - changed the return type to void.
 /* entity B routines are called. You can use it to do any initialization */
 void B_init() //ram's comment - changed the return type to void.
 {
+	B_bit = 0;
+	current_packet_b = new pkt;
+	oncethru = 0;
 }
 
 int TRACE = 1;             /* for my debugging */
@@ -614,7 +785,6 @@ void tolayer3(int AorB,struct pkt packet)
      printf("          TOLAYER3: scheduling arrival on other side\n");
   insertevent(evptr);
 } 
-
 void tolayer5(int AorB,char *datasent)
 {
   

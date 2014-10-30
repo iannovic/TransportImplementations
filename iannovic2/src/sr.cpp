@@ -3,6 +3,9 @@
 #include <iostream>
 #include <getopt.h>
 #include <ctype.h>
+#include <vector>
+#include <string.h>
+#include <queue>
 /* ******************************************************************
  ALTERNATING BIT AND GO-BACK-N NETWORK EMULATOR: VERSION 1.1  J.F.Kurose
 
@@ -12,7 +15,7 @@
      are other messages in the channel for GBN), but can be larger
    - packets can be corrupted (either the header or the data portion)
      or lost, according to user-defined probabilities
-   - packets will be delivered in the order in which they were sent
+   - packets will be delivered in the order in which they were sentd
      (although some can be lost).
 **********************************************************************/
 
@@ -51,15 +54,136 @@ int B_transport = 0;
  * Do NOT change the name/declaration of these variables
  * They are set to zero here. You will need to set them (except WINSIZE) to some proper values.
  * */
-float TIMEOUT = 0.0;
+float TIMEOUT = 15.0;
 int WINSIZE;         //This is supplied as cmd-line parameter; You will need to read this value but do NOT modify it; 
-int SND_BUFSIZE = 0; //Sender's Buffer size
-int RCV_BUFSIZE = 0; //Receiver's Buffer size
+int SND_BUFSIZE = 1000; //Sender's Buffer size
+int RCV_BUFSIZE = 1000; //Receiver's Buffer size
+float time_local = 0;
 
+void tolayer3(int AorB,struct pkt packet);
+void stoptimer(int AorB);
+void starttimer(int AorB,float increment);
+void tolayer5(int AorB,char *datasent);
+
+struct sr_pkt {
+	pkt packet;
+	bool ackd;
+	float time_sent;
+};
+
+/* send variables */
+int send_base;
+int nextseqnum;
+int longest_outstanding_packet;
+std::vector<sr_pkt> A_buffer;
+
+
+/* receiver variables*/
+int rcv_base;
+std::vector<sr_pkt> B_buffer;
+
+/* CHECKSUM FUNCTIONS */
+void setChecksum(pkt* packet)
+{
+	int checksum = 0;
+	checksum += packet->acknum;
+	checksum += packet->seqnum;
+	for (int i = 0; i < 20; i ++)
+	{
+		checksum += packet->payload[i];
+	}
+	packet->checksum = checksum;
+	//printf("checksum is %u \n", checksum);
+	//printf("checksum in packet is %u \n",packet->checksum);
+}
+
+int getChecksum(pkt* packet)
+{
+	int checksum = 0;
+	checksum += packet->acknum;
+	checksum += packet->seqnum;
+	for (int i = 0; i < 20; i ++)
+	{
+		checksum += packet->payload[i];
+	}
+	//printf("checksum is %u \n", checksum);
+	return checksum;
+}
+int checkChecksum(pkt* packet)
+{
+	//printf("packet checksum: %u, calculated checksum %u \n",packet->checksum,getChecksum(packet));
+	if (packet->checksum != getChecksum(packet))
+	{
+		//printf("checksum does not match up populated: %u, calculated: %u \n",packet->checksum,getChecksum(packet));
+		return -1;
+	}
+	return 0;
+}
+/* END OF CHECKSUM FUNCTIONS*/
+
+/* determines longest outstanding packet and sets the global variable appropriately */
+void determineLongestOutstandingPacket()
+{
+	int firstSentPacket = send_base;
+	float firstSentPacketTime = 99999999999.9;
+
+	for (int i = send_base; i < WINSIZE + send_base; i ++)
+	{
+		if (A_buffer[i].ackd == false
+				&& A_buffer[i].time_sent != 0
+				&& A_buffer[i].time_sent < firstSentPacketTime)
+		{
+			firstSentPacketTime = A_buffer[i].time_sent;
+			firstSentPacket = i;
+		}
+	}
+
+	/* set the longest outstand packet appropriately and the time left until timeout for the timer*/
+	longest_outstanding_packet = firstSentPacket;
+	//printf("longest outstanding packet set to %u \n",longest_outstanding_packet);
+}
 /* called from layer 5, passed the data to be sent to other side */
 void A_output(struct msg message) //ram's comment - students can change the return type of the function from struct to pointers if necessary
 {
+	/* Increment the number of messages received from A's application */
+	A_application ++;
 
+	/* create, initialize, and push packet into buffer */
+	sr_pkt sr_packet;
+	sr_packet.ackd = false;
+	sr_packet.time_sent = 0.0;
+	sr_packet.packet.acknum = 0;
+	sr_packet.packet.checksum = 0;
+	sr_packet.packet.seqnum = 0;
+	memset(&sr_packet.packet.payload,0,20);
+	strcpy((char *)&sr_packet.packet.payload,(char *)&message.data);
+	A_buffer.push_back(sr_packet);
+
+	/* send new message if condition holds */
+	if (nextseqnum < WINSIZE + send_base)
+	{
+		/* populate packet */
+		A_buffer[nextseqnum].packet.seqnum = nextseqnum;
+		setChecksum(&A_buffer[nextseqnum].packet);
+
+		/* send packet to layer below */
+		tolayer3(0,A_buffer[nextseqnum].packet);
+		//printf("output at A! sequence number %u \n",nextseqnum);
+		A_transport++;
+
+		/* set the time sent of the packet */
+		A_buffer[nextseqnum].time_sent = time_local;
+
+		/* if the packet has a seqnum of the base then we know it should start the first timer */
+		if (send_base == nextseqnum)
+		{
+			longest_outstanding_packet = send_base;
+			starttimer(0,TIMEOUT);
+		}
+
+		/* increment the seqnum*/
+		nextseqnum = nextseqnum + 1;
+	}
 
 }
 
@@ -72,12 +196,61 @@ void B_output(struct msg message)  /* need be completed only for extra credit */
 /* called from layer 3, when a packet arrives for layer 4 */
 void A_input(struct pkt packet)
 {
+	//printf("input at A! \n");
+	if (checkChecksum(&packet))
+	{
+		//printf("checksum failed, packet is corrupt at A \n");
+	}
+	else
+	{
+		/* mark the packet ackd with the ack just received*/
+		printf("just ACKD seq %u \n",packet.acknum);
+		A_buffer[packet.acknum].ackd = true;
+
+		/* move the base forward until we reach lowest unackd packet */
+		while (A_buffer[send_base].ackd == true)
+		{
+			printf("incrementing base... \n");
+			send_base++;
+		}
+		/* send more ready packets*/
+
+		if (send_base == nextseqnum)
+		{
+			stoptimer(0);
+		}
+		else
+		{
+			if (longest_outstanding_packet == packet.acknum)
+			{
+				stoptimer(0);
+				determineLongestOutstandingPacket();
+				starttimer(0,A_buffer[longest_outstanding_packet].time_sent + TIMEOUT - time_local);
+				printf("timeout value is : %f \n", A_buffer[longest_outstanding_packet].time_sent + TIMEOUT - time_local);
+			}
+		}
+	}
 
 }
 
 /* called when A's timer goes off */
 void A_timerinterrupt() //ram's comment - changed the return type to void.
 {
+	//printf("Timeout! resending sequence %u \n", longest_outstanding_packet);
+	/* re send the packet that the timer was corresponding too */
+	tolayer3(0,A_buffer[longest_outstanding_packet].packet);
+	//printf("resent packet has the following sequence number %u \n", A_buffer[longest_outstanding_packet].packet.seqnum);
+	/* set the time sent to now on the re-sent packet*/
+	A_buffer[longest_outstanding_packet].time_sent = time_local;
+	A_transport++;
+
+	/* determine which packet the timer now belongs to.*/
+	/* 1. the packet must be in the window */
+	/* 2. the packet will have the smallest time sent */
+
+	determineLongestOutstandingPacket();
+	float timeLeft = A_buffer[longest_outstanding_packet].time_sent + TIMEOUT - time_local;
+	starttimer(0,timeLeft);
 
 }  
 
@@ -85,6 +258,10 @@ void A_timerinterrupt() //ram's comment - changed the return type to void.
 /* entity A routines are called. You can use it to do any initialization */
 void A_init() //ram's comment - changed the return type to void.
 {
+	send_base = 0;
+	nextseqnum = 0;
+	longest_outstanding_packet = 0;
+	A_buffer.resize(SND_BUFSIZE);
 }
 
 
@@ -93,6 +270,49 @@ void A_init() //ram's comment - changed the return type to void.
 /* called from layer 3, when a packet arrives for layer 4 at B*/
 void B_input(struct pkt packet)
 {
+	//printf("input at B! with sequence %u \n",packet.seqnum);
+	B_transport++;
+
+	if (checkChecksum(&packet))
+	{
+		printf("checksum failed, packet is corrupt at A \n");
+	}
+
+	/* if packet is rcv_base then send to layer 5 (application)*/
+	else
+	{
+		/* we only ACK this one packet to A even though we may send many to the application */
+		pkt sendpacket;
+		memset(&sendpacket.payload,0,20);
+		sendpacket.acknum = packet.seqnum;
+		sendpacket.seqnum = packet.seqnum;
+		setChecksum(&sendpacket);
+		//printf("sending ACK to A seq %u, \n",sendpacket.ack)
+		tolayer3(1,sendpacket);
+
+		if (packet.seqnum == rcv_base)
+		{
+			B_buffer[rcv_base].packet = packet;
+			B_buffer[rcv_base].ackd = true;
+
+			/* while the packet at the base has already been received we keep
+			 * incrementing the base and sending payloads to the application at B*/
+			while (B_buffer[rcv_base].ackd == true)
+			{
+				printf("Sending to application at B from sequence %u \n",rcv_base);
+				tolayer5(1,B_buffer[rcv_base].packet.payload);
+				B_application++;
+				rcv_base++;
+			}
+		}
+
+		/* otherwise, buffer in the data structure and send appropriate ACK */
+		else
+		{
+			B_buffer[packet.seqnum].ackd = true;
+			B_buffer[packet.seqnum].packet = packet;
+		}
+	}
 }
 
 /* called when B's timer goes off */
@@ -104,12 +324,13 @@ void B_timerinterrupt() //ram's comment - changed the return type to void.
 /* entity B routines are called. You can use it to do any initialization */
 void B_init() //ram's comment - changed the return type to void.
 {
+	rcv_base = 0;
+	B_buffer.resize(RCV_BUFSIZE);
 }
 
 int TRACE = 1;             /* for my debugging */
 int nsim = 0;              /* number of messages from 5 to 4 so far */
 int nsimmax = 0;           /* number of msgs to generate, then stop */
-float time_local = 0;
 float lossprob;            /* probability that a packet is dropped  */
 float corruptprob;         /* probability that one bit is packet is flipped */
 float lambda;              /* arrival rate of messages from layer 5 */
