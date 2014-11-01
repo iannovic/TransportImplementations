@@ -64,7 +64,7 @@ int SND_BUFSIZE = 1000; //Sender's Buffer size
 int RCV_BUFSIZE = 1000; //Receiver's Buffer size
 
 //A state variables
-int* nextseqnum;
+int nextseqnum;
 int base;
 int size;
 std::vector<pkt> packets;
@@ -123,22 +123,22 @@ void A_output(struct msg message) //ram's comment - students can change the retu
 	strcpy((char *)&packet.payload,(char *)&message.data);
 	packets.push_back(packet);
 
-	if(*nextseqnum < base + WINSIZE)
+	if(nextseqnum < base + WINSIZE)
 	{
 		/* populate packet */
-		packets[*nextseqnum].seqnum = *nextseqnum;
-		setChecksum(&packets[*nextseqnum]);
+		packets[nextseqnum].seqnum = nextseqnum;
+		setChecksum(&packets[nextseqnum]);
 
 		/* send packet to layer below */
-		tolayer3(0,packets[*nextseqnum]);
+		tolayer3(0,packets[nextseqnum]);
 		A_transport++;
 
-		if (base == *nextseqnum)
+		if (base == nextseqnum)
 		{
 			starttimer(0,TIMEOUT);
 		}
 
-		*nextseqnum = *nextseqnum + 1;
+		nextseqnum = nextseqnum + 1;
 	}
 }
 
@@ -160,7 +160,7 @@ void A_input(struct pkt packet)
 	{
 		base = packet.acknum;
 
-		if (base == *nextseqnum)
+		if (base == nextseqnum)
 		{
 			stoptimer(0);
 		}
@@ -177,7 +177,7 @@ void A_input(struct pkt packet)
 void A_timerinterrupt() //ram's comment - changed the return type to void.
 {
 	starttimer(0,TIMEOUT);
-	for (int i = base; i < *nextseqnum; i++)
+	for (int i = base; i < nextseqnum; i++)
 	{
 		pkt packet = packets.at(i);
 		printf("resending packet with seq %u \n",packet.seqnum);
@@ -190,12 +190,12 @@ void A_timerinterrupt() //ram's comment - changed the return type to void.
 /* entity A routines are called. You can use it to do any initialization */
 void A_init() //ram's comment - changed the return type to void.
 {
-	nextseqnum = new int;
-	*nextseqnum = 1;
-	printf("nextseqnum is %u \n",*nextseqnum);
-	dup_counter = 0;
+	nextseqnum = 1;
+	printf("nextseqnum is %u \n",nextseqnum);
 	base = 1;
+	printf("before packets.resize() \n");
 	packets.resize(SND_BUFSIZE);
+	printf("after packets.resize() \n");
 }
 
 
