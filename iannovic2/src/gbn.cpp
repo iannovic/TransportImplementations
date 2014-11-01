@@ -131,6 +131,7 @@ void A_output(struct msg message) //ram's comment - students can change the retu
 		printf("set packet checksum without issue \n");
 		/* send packet to layer below */
 		tolayer3(0,packets[nextseqnum]);
+		int i = packets[nextseqnum].acknum;
 		printf("sent packet to layer 3  without issue \n");
 		A_transport++;
 
