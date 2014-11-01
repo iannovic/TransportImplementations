@@ -191,9 +191,9 @@ void A_timerinterrupt() //ram's comment - changed the return type to void.
 /* entity A routines are called. You can use it to do any initialization */
 void A_init() //ram's comment - changed the return type to void.
 {
-	nextseqnum = 1;
+	nextseqnum = 0;
 	printf("nextseqnum is %u \n",nextseqnum);
-	base = 1;
+	base = 0;
 	printf("before packets.resize() \n");
 	packets.resize(SND_BUFSIZE);
 	printf("%u \n",packets.size());
@@ -253,7 +253,7 @@ void B_timerinterrupt() //ram's comment - changed the return type to void.
 /* entity B routines are called. You can use it to do any initialization */
 void B_init() //ram's comment - changed the return type to void.
 {
-	expectedseqnum = 1;
+	expectedseqnum = 0;
 }
 
 int TRACE = 1;             /* for my debugging */
