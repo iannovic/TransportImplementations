@@ -128,9 +128,10 @@ void A_output(struct msg message) //ram's comment - students can change the retu
 		/* populate packet */
 		packets[nextseqnum].seqnum = nextseqnum;
 		setChecksum(&packets[nextseqnum]);
-
+		printf("set packet checksum without issue \n");
 		/* send packet to layer below */
 		tolayer3(0,packets[nextseqnum]);
+		printf("sent packet to layer 3  without issue \n");
 		A_transport++;
 
 		if (base == nextseqnum)
