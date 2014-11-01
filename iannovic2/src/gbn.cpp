@@ -195,6 +195,7 @@ void A_init() //ram's comment - changed the return type to void.
 	base = 1;
 	printf("before packets.resize() \n");
 	packets.resize(SND_BUFSIZE);
+	printf("%u \n",packets.size());
 	printf("after packets.resize() \n");
 }
 
